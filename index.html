@@ -358,7 +358,7 @@ details summary::-webkit-details-marker{display:none}
 .pbar .knob{position:absolute; top:50%; width:18px; height:18px; border-radius:50%; background:#fff;
   border:3px solid var(--p1); transform:translate(-50%,-50%); box-shadow:0 2px 6px rgba(0,0,0,.25); pointer-events:none}
 .pbar:focus-visible{outline:2.5px solid var(--p1); outline-offset:3px}
-.focus-grid{display:grid; grid-template-columns:repeat(2,1fr); gap:16px}
+.focus-grid{display:grid; grid-template-columns:repeat(2,1fr); gap:16px; align-items:start}
 .fcard{background:var(--panel); border:1.8px solid var(--line); border-radius:var(--r-lg); padding:16px 18px;
   transition:box-shadow .16s, border-color .16s}
 .fcard:hover{box-shadow:var(--shadow); border-color:var(--line-strong)}
@@ -369,6 +369,11 @@ details summary::-webkit-details-marker{display:none}
 .fcard .ft:hover{color:var(--p1-ink)}
 .fcard .pct{font-family:var(--display); font-weight:600; font-size:22px; color:var(--p1-ink); margin-left:auto;
   font-variant-numeric:tabular-nums}
+.fcard.donecard{opacity:.6}
+.fcard.donecard:hover{opacity:.85}
+.fmeta{display:flex; align-items:center; gap:9px; flex-wrap:wrap; margin-top:10px}
+.fmeta .pill svg{width:12px; height:12px}
+.fcat{font-family:var(--mono); font-size:10px; letter-spacing:.06em; text-transform:uppercase; color:var(--ink-dim); margin-left:auto}
 .mile{display:flex; flex-direction:column; gap:1px; margin-top:14px}
 .mrow{display:flex; align-items:center; gap:10px; padding:6px 6px; border-radius:9px}
 .mrow:hover{background:var(--panel-2)}
@@ -785,77 +790,61 @@ function overviewView(){
     stat(doneCount, "Completed", "ok", "marked done")
   ));
 
-  /* in focus — milestones, progress, team */
-  const focusItems=items.filter(it=>!isDone(it) && (((it.subtasks||[]).length)||((it.people||[]).length)))
-    .sort((a,b)=>{ const da=nextDue(a),db=nextDue(b); return (da?parse(da).getTime():Infinity)-(db?parse(db).getTime():Infinity); });
-  if(focusItems.length){
-    const fsec=el("div",{style:"margin-bottom:26px"});
-    fsec.append(el("div",{class:"sec-h"}, el("h2",{},"In focus"),
-      el("span",{class:"meta"}, focusItems.length+" active · tick milestones, drag progress")));
-    const grid=el("div",{class:"focus-grid"});
-    focusItems.forEach(it=>grid.append(focusCard(it)));
-    fsec.append(grid); wrap.append(fsec);
-  }
-
-  /* horizon */
-  const grouped={}; BUCKETS.forEach(([k])=>grouped[k]=[]);
-  dls.forEach(d=>grouped[bucketOf(daysUntil(d.iso))].push(d));
-  const horizon=el("div",{});
-  horizon.append(el("div",{class:"sec-h"}, el("h2",{},"On the horizon"),
-    el("span",{class:"meta"},dls.length+" open deadline"+(dls.length===1?"":"s"))));
-  let any=false;
-  BUCKETS.forEach(([k,label])=>{
-    const arr=grouped[k]; if(!arr.length)return; any=true;
-    const b=el("div",{class:"bucket"+(k==="overdue"?" overdue":"")},
-      el("div",{class:"bh"}, el("span",{},label), el("span",{class:"ln"}), el("span",{},String(arr.length))));
-    arr.forEach(d=>{
-      const c=catById(d.catId); const od=daysUntil(d.iso)<0;
-      b.append(el("button",{class:"dl"+(od?" over":""),onclick:()=>openEditor(d.itemId)},
-        el("span",{class:"when mono"}, relLabel(d.iso)),
-        el("div",{class:"body"},
-          el("div",{class:"t"}, d.title),
-          el("div",{class:"m"}, el("span",{class:"swatch",style:"background:"+c.color,title:c.name}),
-            el("span",{}, c.name), d.kind!=="Due"?el("span",{class:"kind"},"· "+d.kind):null)),
-        el("span",{class:"pill "+(od?"over":"due")}, fmtShort(d.iso))
-      ));
-    });
-    horizon.append(b);
+  /* every task as a focus card, sorted by due date then criticality */
+  const rank=p=>({Critical:0,High:1,Medium:2,Low:3}[p]??2);
+  const sorted=items.slice().sort((a,b)=>{
+    const ad=isDone(a),bd=isDone(b); if(ad!==bd)return ad?1:-1;      /* done last */
+    const da=nextDue(a),db=nextDue(b);
+    const va=da?parse(da).getTime():Infinity, vb=db?parse(db).getTime():Infinity;
+    if(va!==vb)return va-vb;                                          /* soonest due first */
+    return rank(a.priority)-rank(b.priority);                         /* then by criticality */
   });
-  if(!any) horizon.append(el("div",{class:"empty"}, el("div",{class:"big"},"Nothing scheduled"),
-    el("div",{},"No open deadlines here. Add one with the New button.")));
+  const sec=el("div",{style:"margin-bottom:24px"});
+  sec.append(el("div",{class:"sec-h"}, el("h2",{},"In focus"),
+    el("span",{class:"meta"}, sorted.length+" task"+(sorted.length===1?"":"s")+" · by due date & priority")));
+  if(!sorted.length){
+    sec.append(el("div",{class:"empty"}, el("div",{class:"big"},"Nothing here yet"),
+      el("div",{},"Hit New to add your first task.")));
+  } else {
+    const grid=el("div",{class:"focus-grid"});
+    sorted.forEach(it=>grid.append(focusCard(it)));
+    sec.append(grid);
+  }
+  wrap.append(sec);
 
-  /* progress side */
-  const side=el("div",{});
-  const total=items.length, done=doneCount;
-  const pct=total?Math.round(done/total*100):0;
-  side.append(el("div",{class:"att"},
-    el("div",{class:"att-h"}, icon("flag",2), el("span",{},"Progress")),
-    el("div",{class:"progwrap"},
-      el("div",{class:"prog-lbl"}, el("span",{}, el("b",{},done+" of "+total), " tasks complete"),
-        el("b",{class:"mono"}, pct+"%")),
-      el("div",{class:"track"}, el("i",{style:"width:"+pct+"%"})),
-      el("div",{class:"catbars"}, ...state.categories.map(c=>{
-        const its=state.items.filter(i=>!i.archived&&i.categoryId===c.id);
-        const dn=its.filter(isDone).length; const p=its.length?Math.round(dn/its.length*100):0;
-        return el("div",{class:"cb"},
-          el("div",{class:"nm"}, el("span",{class:"swatch",style:"background:"+c.color}), c.name),
-          el("div",{class:"mini"}, el("i",{style:"width:"+p+"%;background:"+c.color})),
-          el("div",{class:"n"}, dn+"/"+its.length));
-      }))
-    )
+  /* overall progress, full width */
+  const total=items.length, pct=total?Math.round(doneCount/total*100):0;
+  wrap.append(el("div",{class:"panel"},
+    el("div",{class:"prog-lbl"}, el("span",{}, el("b",{},doneCount+" of "+total), " tasks complete"),
+      el("b",{class:"mono"}, pct+"%")),
+    el("div",{class:"track"}, el("i",{style:"width:"+pct+"%"})),
+    el("div",{class:"catbars"}, ...state.categories.map(c=>{
+      const its=state.items.filter(i=>!i.archived&&i.categoryId===c.id);
+      const dn=its.filter(isDone).length; const p=its.length?Math.round(dn/its.length*100):0;
+      return el("div",{class:"cb"},
+        el("div",{class:"nm"}, el("span",{class:"swatch",style:"background:"+c.color}), c.name),
+        el("div",{class:"mini"}, el("i",{style:"width:"+p+"%;background:"+c.color})),
+        el("div",{class:"n"}, dn+"/"+its.length));
+    }))
   ));
-  wrap.append(el("div",{class:"ov-grid"}, horizon, side));
   return wrap;
 }
 function focusCard(it){
-  const c=catById(it.categoryId);
-  const card=el("div",{class:"fcard"});
+  const c=catById(it.categoryId); const done=isDone(it);
+  const card=el("div",{class:"fcard"+(done?" donecard":"")});
   const pctLbl=el("div",{class:"pct"}, progressOf(it)+"%");
   const fdel=el("button",{class:"fdel",title:"Delete task",onclick:e=>{ e.stopPropagation(); deleteTask(it); }}); fdel.innerHTML=svg("trash",1.8);
   card.append(el("div",{class:"fh"},
     el("span",{class:"swatch",style:"background:"+c.color,title:c.name}),
     el("button",{class:"ft",title:"Open task",onclick:()=>openEditor(it.id)}, it.title),
     pctLbl, fdel));
+  const d=nextDue(it); const od=d&&daysUntil(d)<0&&!done;
+  const meta=el("div",{class:"fmeta"});
+  if(done) meta.append(el("span",{class:"pill done"}, icon("check",2.4), "Done"));
+  else if(d) meta.append(el("span",{class:"pill "+(od?"over":"due")}, icon("clock",2), relLabel(d)));
+  if(!done && it.priority && it.priority!=="Medium") meta.append(el("span",{class:"prio p-"+it.priority}, it.priority));
+  meta.append(el("span",{class:"fcat"}, c.name));
+  card.append(meta);
   const bar=progressCtl(it,p=>{ pctLbl.textContent=p+"%"; });
   card.append(el("div",{style:"margin-top:12px"}, bar));
   const syncBar=()=>{ if(typeof it.progress!=="number"){ bar._paint(); pctLbl.textContent=progressOf(it)+"%"; } };
