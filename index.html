@@ -434,6 +434,30 @@ details summary::-webkit-details-marker{display:none}
   .cf-row{grid-template-columns:1fr 1fr}
   .rowdel{width:38px; height:38px}
 }
+/* compact focus cards — same info, tighter */
+.mcol{display:flex; flex-direction:column; gap:12px; min-width:0}
+.stats{margin-bottom:18px}
+.stat{padding:15px 18px 13px}
+.stat .v{font-size:46px; margin-top:8px}
+.stat .sub{margin-top:5px}
+.sec-h{margin:0 0 12px}
+.focus-grid{gap:12px}
+.fcard{padding:12px 15px}
+.fcard .fh{align-items:center}
+.fcard .ft{font-size:14.5px}
+.fcard .pct{font-size:18px}
+.fcard .fdel{width:26px; height:26px}
+.fmeta{margin-top:6px; gap:7px}
+.pbar{height:8px}
+.pbar .knob{width:14px; height:14px; border-width:2.5px}
+.fcard .mile{margin-top:8px}
+.fcard .mrow{padding:3px 5px; gap:9px}
+.fcard .mrow .chk{width:18px; height:18px}
+.fcard .miniadd{padding:5px 2px}
+.fcard .team{margin-top:9px; padding-top:9px; gap:11px}
+.fcard .team .av{width:20px; height:20px}
+.fcard .tmem .tnm{font-size:12px}
+
 @media (min-width:901px){ .mobcat,.mobsep{display:none} }
 @media (max-width:900px){
   .tablewrap{overflow-x:auto}
@@ -704,6 +728,7 @@ function rerenderCanvas(){ const c=$("#canvas"); if(!c)return; c.innerHTML=""; c
 /* ---- motion: entrance stagger, count-up, confetti ---- */
 function reducedMotion(){ try{return matchMedia("(prefers-reduced-motion: reduce)").matches;}catch(_){return false;} }
 function postRender(){ const c=$("#canvas"); if(!c)return;
+  const g=c.querySelector(".focus-grid"); if(g) layoutMasonry(g);
   const fresh = view!==lastAnimView; lastAnimView=view;
   if(fresh && !reducedMotion()){
     let i=0; c.querySelectorAll(".stat,.dl,.card,.att,.panel,.day,.col,.fcard").forEach(n=>{
@@ -711,6 +736,20 @@ function postRender(){ const c=$("#canvas"); if(!c)return;
     c.classList.add("anim"); void c.offsetWidth; animateCounts(c);
   } else { c.classList.remove("anim"); }
 }
+/* masonry: place cards (in sorted order) into the shortest column so short
+   and tall cards pack tightly, urgency still flowing top-to-bottom */
+function layoutMasonry(grid){
+  const cols = innerWidth<=900 ? 1 : 2;
+  const cards=[...grid.children].filter(n=>n.classList&&n.classList.contains("fcard"));
+  if(cols<2 || cards.length<3) return;                 /* single column / too few: leave as-is */
+  const heights=cards.map(n=>n.offsetHeight);           /* measured at current ~half width */
+  const colEls=[], colH=[]; for(let i=0;i<cols;i++){ colEls.push(el("div",{class:"mcol"})); colH.push(0); }
+  cards.forEach((card,idx)=>{ let m=0; for(let i=1;i<cols;i++){ if(colH[i]<colH[m])m=i; }
+    colEls[m].append(card); colH[m]+=heights[idx]+12; });
+  grid.replaceChildren(...colEls);
+}
+let _resizeT;
+addEventListener("resize",()=>{ clearTimeout(_resizeT); _resizeT=setTimeout(()=>{ if(view==="overview")rerenderCanvas(); },220); });
 function animateCounts(scope){ if(reducedMotion())return;
   scope.querySelectorAll("[data-count]").forEach(n=>{ const target=+n.getAttribute("data-count")||0;
     if(target<=0){ n.textContent="0"; return; } const dur=750, t0=performance.now();
@@ -846,7 +885,7 @@ function focusCard(it){
   meta.append(el("span",{class:"fcat"}, c.name));
   card.append(meta);
   const bar=progressCtl(it,p=>{ pctLbl.textContent=p+"%"; });
-  card.append(el("div",{style:"margin-top:12px"}, bar));
+  card.append(el("div",{style:"margin-top:8px"}, bar));
   const syncBar=()=>{ if(typeof it.progress!=="number"){ bar._paint(); pctLbl.textContent=progressOf(it)+"%"; } };
   const mile=el("div",{class:"mile"});
   (it.subtasks||[]).forEach(s=>mile.append(mrow(it,s,syncBar)));
