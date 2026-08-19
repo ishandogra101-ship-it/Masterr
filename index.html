@@ -493,13 +493,14 @@ function seed(){
   ];
   return {version:1, updatedAt:Date.now(), meta:{title:"Masterr", subtitle:"Command Ledger"},
     categories:cats, statuses:DEFAULT_STATUSES.map(s=>({...s})), items,
-    settings:{theme:"", accent:"", firstRun:true, firebase:null}};
+    settings:{theme:"light", accent:"", firstRun:true, firebase:null, themeSet:true}};
 }
 function load(){ let s=null; try{const raw=localStorage.getItem(KEY); if(raw){const p=JSON.parse(raw); if(p&&p.items)s=p;}}catch(e){}
   if(!s)s=seed();
   if(s.updatedAt==null)s.updatedAt=Date.now();
   if(!s.settings)s.settings={theme:"",accent:"",firstRun:false};
   if(s.settings.firebase===undefined)s.settings.firebase=null;
+  if(!s.settings.themeSet){ if(!s.settings.theme)s.settings.theme="light"; s.settings.themeSet=true; }
   return s; }
 function persistLocal(){ try{localStorage.setItem(KEY,JSON.stringify(state));}catch(e){} }
 function save(){ state.updatedAt=Date.now(); persistLocal(); if(typeof Cloud!=="undefined")Cloud.pushSoon(); }
@@ -939,7 +940,7 @@ function settingsView(){
     el("div",{class:"field"}, el("label",{class:"fl"},"Theme"),
       el("div",{class:"seg themeseg"},
         ...[["","Auto"],["light","Light"],["dark","Dark"]].map(([v,l])=>
-          el("button",{class:(state.settings.theme||"")===v?"on":"",onclick:()=>{state.settings.theme=v; save(); render();}},l)))),
+          el("button",{class:(state.settings.theme||"")===v?"on":"",onclick:()=>{state.settings.theme=v; state.settings.themeSet=true; save(); render();}},l)))),
     el("div",{class:"field"}, el("label",{class:"fl"},"Accent"),
       el("div",{class:"accents"},
         ...ACCENTS.map(([n,h])=>el("button",{title:n,style:"background:"+h,class:(state.settings.accent||"#7B5CFF")===h||(!state.settings.accent&&h==="#7B5CFF")?"on":"",
