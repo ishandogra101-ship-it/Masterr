@@ -1179,6 +1179,10 @@ function settingsView(){
       el("button",{class:"btn",onclick:importData}, icon("upload"), "Import JSON"),
       el("button",{class:"btn",onclick:()=>{ if(confirm("Reset to the sample data? Your current tasks will be replaced."))
         {state=seed(); save(); catFilter="all"; render(); toast("Reset to sample");} }}, "Load sample"),
+      el("button",{class:"btn",onclick:()=>{ try{ const raw=localStorage.getItem(KEY+".bak"); if(!raw){ toast("No pre-sync backup found"); return; }
+        if(confirm("Restore the local copy saved just before this device last pulled from the cloud? It replaces current data (and re-syncs to the cloud if connected).")){
+          state=JSON.parse(raw); state.updatedAt=Date.now(); if(state.settings)state.settings.themeSet=true; save(); catFilter="all"; render(); toast("Backup restored"); } }
+        catch(e){ toast("Couldn't restore backup"); } }}, "Restore pre-sync backup"),
       el("button",{class:"btn",style:"color:var(--crit)",onclick:()=>{ if(confirm("Delete ALL tasks and start empty?"))
         {state=seed(); state.items=[]; save(); catFilter="all"; render(); toast("Cleared");} }}, icon("trash"), "Clear all")
     ),
@@ -1425,6 +1429,7 @@ const Cloud={
       this.app=(a.getApps&&a.getApps().length)? a.getApp() : a.initializeApp(config);
       this.auth=au.getAuth(this.app);
       this.db=fs.getFirestore(this.app);
+      au.getRedirectResult(this.auth).catch(e=>{ if(e&&e.code)this.set("error", e.message||String(e)); });
       au.onAuthStateChanged(this.auth, u=>{
         this.user=u;
         if(u){ this.set("live","Signed in"); this.subscribe(); }
@@ -1432,19 +1437,36 @@ const Cloud={
       });
     }catch(e){ this.set("error","Couldn't load Firebase — "+(e&&e.message||e)); }
   },
-  async signInGoogle(){ try{ const {au}=this.mods; await au.signInWithPopup(this.auth, new au.GoogleAuthProvider()); }
-    catch(e){ this.set("error", (e&&e.message||String(e))); toast("Google sign-in failed"); } },
+  async signInGoogle(){ const {au}=this.mods; const prov=new au.GoogleAuthProvider();
+    try{ await au.signInWithPopup(this.auth, prov); }
+    catch(e){ const c=(e&&e.code)||"";
+      if(/popup|operation-not-supported|cancelled|network-request/.test(c)){
+        try{ this.set("connecting","Redirecting to Google…"); await au.signInWithRedirect(this.auth, prov); }
+        catch(e2){ this.set("error", e2&&e2.message||String(e2)); toast("Sign-in failed"); }
+      } else { this.set("error", e&&e.message||String(e)); toast("Google sign-in failed"); } } },
   async signInAnon(){ try{ const {au}=this.mods; await au.signInAnonymously(this.auth); }
     catch(e){ this.set("error", (e&&e.message||String(e))); toast("Anonymous sign-in failed"); } },
   async signOut(){ try{ const {au}=this.mods; if(this.auth)await au.signOut(this.auth); }catch(e){} },
   ref(){ const {fs}=this.mods; return fs.doc(this.db,"masterr",this.user.uid); },
-  subscribe(){ const {fs}=this.mods; if(this.unsub)this.unsub();
+  markSynced(){ if(state.settings.firebase) state.settings.firebase.hasSynced=true; persistLocal(); },
+  subscribe(){ const {fs}=this.mods; if(this.unsub)this.unsub(); this.firstSnap=true;
     this.unsub=fs.onSnapshot(this.ref(), snap=>{
       if(snap.metadata.hasPendingWrites) return;                  /* our own optimistic write */
-      if(!snap.exists()){ this.pushNow(); return; }               /* seed the cloud from local */
+      if(!snap.exists()){                                          /* cloud empty */
+        if(this.firstSnap){ this.firstSnap=false; this.markSynced(); this.pushNow(); }  /* first device seeds it */
+        return; }
       const d=snap.data(); if(!d||!d.blob) return;
       let obj; try{ obj=JSON.parse(d.blob); }catch(_){ return; }
       const ru=obj.updatedAt||0, lu=state.updatedAt||0;
+      if(this.firstSnap){ this.firstSnap=false;
+        const neverSynced = !(state.settings.firebase && state.settings.firebase.hasSynced);
+        const useCloud = neverSynced || ru>=lu;                    /* a new device always adopts the cloud */
+        this.markSynced();
+        if(useCloud){ try{ localStorage.setItem(KEY+".bak", JSON.stringify(state)); }catch(_){}   /* safety backup */
+          this.applying=true; applyRemote(obj); this.applying=false; this.set("live","Synced "+timeAgo(ru)); }
+        else { this.pushNow(); }
+        return;
+      }
       if(ru>lu){ this.applying=true; applyRemote(obj); this.applying=false; this.set("live","Synced "+timeAgo(ru)); }
       else if(ru<lu){ this.pushNow(); }                            /* local newer → update cloud */
     }, err=>{ this.set("error", err&&err.message||"Sync error"); });
