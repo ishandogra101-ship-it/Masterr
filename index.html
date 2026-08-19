@@ -483,13 +483,18 @@ function seed(){
       notes:"One-pager, consulting format.",
       subtasks:[{id:uid(),title:"Refresh bullet points",done:true},{id:uid(),title:"Review with senior",done:false,due:plus(3)},{id:uid(),title:"Finalize PDF",done:false,due:plus(5)}]}),
   ];
-  return {version:1, meta:{title:"Masterr", subtitle:"Command Ledger"},
+  return {version:1, updatedAt:Date.now(), meta:{title:"Masterr", subtitle:"Command Ledger"},
     categories:cats, statuses:DEFAULT_STATUSES.map(s=>({...s})), items,
-    settings:{theme:"", accent:"", firstRun:true}};
+    settings:{theme:"", accent:"", firstRun:true, firebase:null}};
 }
-function load(){ try{const raw=localStorage.getItem(KEY); if(raw){const s=JSON.parse(raw);
-    if(s&&s.items)return s;}}catch(e){} return seed(); }
-function save(){ try{localStorage.setItem(KEY,JSON.stringify(state));}catch(e){} }
+function load(){ let s=null; try{const raw=localStorage.getItem(KEY); if(raw){const p=JSON.parse(raw); if(p&&p.items)s=p;}}catch(e){}
+  if(!s)s=seed();
+  if(s.updatedAt==null)s.updatedAt=Date.now();
+  if(!s.settings)s.settings={theme:"",accent:"",firstRun:false};
+  if(s.settings.firebase===undefined)s.settings.firebase=null;
+  return s; }
+function persistLocal(){ try{localStorage.setItem(KEY,JSON.stringify(state));}catch(e){} }
+function save(){ state.updatedAt=Date.now(); persistLocal(); if(typeof Cloud!=="undefined")Cloud.pushSoon(); }
 function catById(id){return state.categories.find(c=>c.id===id)||{name:"—",color:"#888"};}
 function statusById(id){return state.statuses.find(s=>s.id===id)||state.statuses[0];}
 function isDone(it){return statusById(it.statusId).done;}
@@ -550,7 +555,10 @@ function spine(){
   const foot=el("div",{class:"foot"},
     el("button",{class:"iconbtn",title:"Toggle light / dark",onclick:toggleTheme},
       icon(document.documentElement.getAttribute("data-theme")==="dark"||(matchMedia("(prefers-color-scheme:dark)").matches&&document.documentElement.getAttribute("data-theme")!=="light")?"sun":"moon")),
-    el("div",{style:"font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:var(--ink-faint);text-transform:uppercase"},"Saved locally")
+    el("button",{id:"cloudfoot",title:"Cloud sync — open Settings",onclick:()=>{view="settings";render();},
+      style:"display:flex;align-items:center;gap:7px;font-family:var(--mono);font-size:10px;letter-spacing:.1em;color:var(--ink-faint);text-transform:uppercase"},
+      el("span",{class:"d",style:"width:7px;height:7px;border-radius:99px;flex:none;background:"+cloudColor()}),
+      el("span",{class:"t"},cloudLabel()))
   );
   return el("aside",{class:"spine"},
     el("div",{class:"brand"},
@@ -936,6 +944,9 @@ function settingsView(){
   }}, icon("plus"), "Add status"));
   wrap.append(stPanel);
 
+  /* cloud sync */
+  wrap.append(cloudPanel());
+
   /* data */
   wrap.append(el("div",{class:"panel"},
     el("h3",{},"Your data"),
@@ -1118,10 +1129,156 @@ document.addEventListener("keydown",e=>{
   if(e.key==="/"){ e.preventDefault(); const s=$(".search input"); s&&s.focus(); }
 });
 
+/* =====================================================================
+   CLOUD SYNC — optional Firebase / Firestore (bring your own project)
+   ===================================================================== */
+const FBV="10.12.5";
+function timeAgo(ts){ const s=Math.round((Date.now()-ts)/1000); if(s<45)return"just now";
+  const m=Math.round(s/60); if(m<60)return m+"m ago"; const h=Math.round(m/60); if(h<24)return h+"h ago";
+  return Math.round(h/24)+"d ago"; }
+function cloudLabel(){ return ({off:"Saved locally", connecting:"Connecting…", signedout:"Cloud · sign in",
+  live:"Cloud synced", error:"Cloud error"})[Cloud.status]||"Saved locally"; }
+function cloudColor(){ return ({off:"var(--ink-faint)", connecting:"var(--accent)", signedout:"var(--accent)",
+  live:"var(--good)", error:"var(--crit)"})[Cloud.status]||"var(--ink-faint)"; }
+let _prevCloud="";
+function updateCloudUI(){
+  const f=document.getElementById("cloudfoot");
+  if(f){ const t=f.querySelector(".t"), d=f.querySelector(".d");
+    if(t)t.textContent=cloudLabel(); if(d)d.style.background=cloudColor(); }
+  if(view==="settings" && Cloud.status!==_prevCloud) rerenderCanvas();
+  _prevCloud=Cloud.status;
+}
+function applyRemote(obj){
+  const fb = state.settings && state.settings.firebase;           /* keep this device's creds */
+  state = obj;
+  if(!state.settings) state.settings={};
+  state.settings.firebase = fb;
+  persistLocal(); render();
+}
+function parseCfg(text){ try{ const t=String(text).trim(); const s=t.indexOf("{"), e=t.lastIndexOf("}");
+  if(s<0||e<0)return null; const obj=Function("return ("+t.slice(s,e+1)+")")();
+  if(obj&&obj.apiKey&&obj.projectId)return obj; return null; }catch(_){ return null; } }
+
+const Cloud={
+  status:"off", msg:"", app:null, auth:null, db:null, user:null, mods:null,
+  unsub:null, pushTimer:null, applying:false,
+  set(s,m){ this.status=s; this.msg=m||""; updateCloudUI(); },
+  cfg(){ return state.settings.firebase && state.settings.firebase.config; },
+  async connect(){
+    const config=this.cfg(); if(!config){ this.set("off"); return; }
+    try{
+      this.set("connecting","Loading Firebase…");
+      if(!this.mods){
+        const [a,au,fs]=await Promise.all([
+          import(`https://www.gstatic.com/firebasejs/${FBV}/firebase-app.js`),
+          import(`https://www.gstatic.com/firebasejs/${FBV}/firebase-auth.js`),
+          import(`https://www.gstatic.com/firebasejs/${FBV}/firebase-firestore.js`)
+        ]);
+        this.mods={a,au,fs};
+      }
+      const {a,au,fs}=this.mods;
+      this.app=(a.getApps&&a.getApps().length)? a.getApp() : a.initializeApp(config);
+      this.auth=au.getAuth(this.app);
+      this.db=fs.getFirestore(this.app);
+      au.onAuthStateChanged(this.auth, u=>{
+        this.user=u;
+        if(u){ this.set("live","Signed in"); this.subscribe(); }
+        else { if(this.unsub){this.unsub(); this.unsub=null;} this.set("signedout","Not signed in"); }
+      });
+    }catch(e){ this.set("error","Couldn't load Firebase — "+(e&&e.message||e)); }
+  },
+  async signInGoogle(){ try{ const {au}=this.mods; await au.signInWithPopup(this.auth, new au.GoogleAuthProvider()); }
+    catch(e){ this.set("error", (e&&e.message||String(e))); toast("Google sign-in failed"); } },
+  async signInAnon(){ try{ const {au}=this.mods; await au.signInAnonymously(this.auth); }
+    catch(e){ this.set("error", (e&&e.message||String(e))); toast("Anonymous sign-in failed"); } },
+  async signOut(){ try{ const {au}=this.mods; if(this.auth)await au.signOut(this.auth); }catch(e){} },
+  ref(){ const {fs}=this.mods; return fs.doc(this.db,"masterr",this.user.uid); },
+  subscribe(){ const {fs}=this.mods; if(this.unsub)this.unsub();
+    this.unsub=fs.onSnapshot(this.ref(), snap=>{
+      if(snap.metadata.hasPendingWrites) return;                  /* our own optimistic write */
+      if(!snap.exists()){ this.pushNow(); return; }               /* seed the cloud from local */
+      const d=snap.data(); if(!d||!d.blob) return;
+      let obj; try{ obj=JSON.parse(d.blob); }catch(_){ return; }
+      const ru=obj.updatedAt||0, lu=state.updatedAt||0;
+      if(ru>lu){ this.applying=true; applyRemote(obj); this.applying=false; this.set("live","Synced "+timeAgo(ru)); }
+      else if(ru<lu){ this.pushNow(); }                            /* local newer → update cloud */
+    }, err=>{ this.set("error", err&&err.message||"Sync error"); });
+  },
+  pushSoon(){ if(this.status!=="live"||this.applying) return;
+    clearTimeout(this.pushTimer); this.pushTimer=setTimeout(()=>this.pushNow(),1200); },
+  async pushNow(){ if(this.status!=="live"||!this.user) return;
+    try{ const {fs}=this.mods; const clone=JSON.parse(JSON.stringify(state));
+      if(clone.settings) delete clone.settings.firebase;          /* never store creds in Firestore */
+      await fs.setDoc(this.ref(), {blob:JSON.stringify(clone), updatedAt:state.updatedAt||Date.now()});
+      this.set("live","Synced "+timeAgo(Date.now())); }
+    catch(e){ this.set("error", e&&e.message||"Write failed"); } },
+  async disconnect(){ if(this.unsub){this.unsub();this.unsub=null;} await this.signOut(); this.user=null;
+    if(state.settings.firebase) state.settings.firebase.autoconnect=false; persistLocal(); this.set("off"); },
+  forget(){ this.disconnect(); state.settings.firebase=null; persistLocal(); rerenderCanvas(); }
+};
+
+const RULES=`rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    match /masterr/{uid} {
+      allow read, write: if request.auth != null && request.auth.uid == uid;
+    }
+  }
+}`;
+function cloudPanel(){
+  const fb=state.settings.firebase, st=Cloud.status;
+  const p=el("div",{class:"panel"},
+    el("h3",{},"Cloud sync — Firebase"),
+    el("p",{class:"desc"},"Optional. Connect your own Firebase project to sync this ledger across devices in real time. Your config stays on this device; your tasks live in your Firestore."));
+  /* status line */
+  p.append(el("div",{style:"display:flex;align-items:center;gap:9px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--panel-2);margin-bottom:16px"},
+    el("span",{style:"width:8px;height:8px;border-radius:99px;flex:none;background:"+cloudColor()}),
+    el("span",{style:"font-weight:600;font-size:13.5px"}, cloudLabel()),
+    Cloud.user?el("span",{style:"font-family:var(--mono);font-size:11px;color:var(--ink-dim)"},
+      "· "+(Cloud.user.email||("anon "+Cloud.user.uid.slice(0,6)))):null,
+    Cloud.msg?el("span",{style:"margin-left:auto;font-size:11.5px;color:"+(st==="error"?"var(--crit)":"var(--ink-dim)")+";max-width:50%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap",title:Cloud.msg},Cloud.msg):null));
+
+  if(!fb || !fb.config){
+    const ta=el("textarea",{placeholder:'Paste your firebaseConfig here — e.g.\n{\n  "apiKey": "…",\n  "authDomain": "your-app.firebaseapp.com",\n  "projectId": "your-app",\n  …\n}',style:"min-height:130px;font-family:var(--mono);font-size:12px"});
+    p.append(el("label",{class:"fl"},"Firebase config"), ta,
+      el("div",{class:"hint"},"Firebase console → Project settings → Your apps → SDK setup & config → Config."),
+      el("button",{class:"btn pri",style:"margin-top:12px",onclick:()=>{
+        const c=parseCfg(ta.value); if(!c){ toast("Couldn't read that config"); return; }
+        state.settings.firebase={config:c, autoconnect:true}; persistLocal(); Cloud.connect(); rerenderCanvas();
+      }}, icon("upload"), "Connect project"));
+  } else if(st==="live" && Cloud.user){
+    p.append(el("div",{style:"display:flex;gap:10px;flex-wrap:wrap"},
+      el("button",{class:"btn",onclick:()=>Cloud.signOut()}, "Sign out"),
+      el("button",{class:"btn",onclick:()=>Cloud.disconnect().then(rerenderCanvas)}, "Stop syncing"),
+      el("button",{class:"btn",style:"color:var(--crit)",onclick:()=>{ if(confirm("Forget the Firebase config on this device? Your cloud data is not deleted.")) Cloud.forget(); }}, "Forget config")));
+  } else {
+    p.append(el("div",{style:"display:flex;gap:10px;flex-wrap:wrap"},
+      el("button",{class:"btn pri",onclick:()=>Cloud.signInGoogle()}, "Sign in with Google"),
+      el("button",{class:"btn",onclick:()=>Cloud.signInAnon()}, "Use anonymously"),
+      (st==="off"||st==="error")?el("button",{class:"btn",onclick:()=>Cloud.connect()}, "Reconnect"):null,
+      el("button",{class:"btn ghost",style:"color:var(--crit)",onclick:()=>{ if(confirm("Forget the Firebase config on this device?")) Cloud.forget(); }}, "Forget config")));
+  }
+  /* setup help */
+  const det=el("details",{style:"margin-top:16px"});
+  det.append(el("summary",{style:"cursor:pointer;font-family:var(--mono);font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink-dim)"},"First-time setup & security rules"));
+  det.append(el("ol",{style:"margin:12px 0 0;padding-left:20px;font-size:13px;color:var(--ink-2);line-height:1.7"},
+    el("li",{},"In the Firebase console, create a project and a Web app; copy its config into the box above."),
+    el("li",{},"Build → Firestore Database → create (production mode)."),
+    el("li",{},"Build → Authentication → Sign-in method → enable Google and/or Anonymous."),
+    el("li",{},"For Google sign-in, add the domain you open this from (e.g. your GitHub Pages domain, or localhost) under Authentication → Settings → Authorized domains."),
+    el("li",{},"Paste these Firestore security rules so only you can read your data:")));
+  const pre=el("pre",{style:"margin:10px 0 0;padding:12px;background:var(--panel-2);border:1px solid var(--line);border-radius:10px;overflow-x:auto;font-family:var(--mono);font-size:11.5px;line-height:1.5;white-space:pre"}); pre.textContent=RULES;
+  det.append(pre,
+    el("div",{class:"hint",style:"margin-top:10px"},"Note: Google sign-in needs an authorized domain, so it won't work from a raw file:// path — host the page (GitHub Pages / localhost) or use Anonymous. This preview inside Claude runs local-only; the copy in your repo does the cloud sync."));
+  p.append(det);
+  return p;
+}
+
 /* boot */
 state=load();
 matchMedia("(prefers-color-scheme:dark)").addEventListener("change",()=>{ if(!state.settings.theme)render(); });
 render();
+if(state.settings.firebase && state.settings.firebase.config && state.settings.firebase.autoconnect!==false){ Cloud.connect(); }
 })();
 </script>
 </body>

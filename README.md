@@ -45,8 +45,51 @@ Everything is one flexible item, and almost every part of the model is editable:
 
 Settings → *Your data*: **Export JSON** for a backup, **Import JSON** to restore or move
 devices, **Load sample** to reset to the demo, or **Clear all** to start empty. Because
-storage is per-browser, download this page and open it from your own device to keep a
+local storage is per-browser, download this page and open it from your own device to keep a
 private, permanent copy.
+
+## Cloud sync (optional — bring your own Firebase)
+
+The app works fully offline on `localStorage`. To sync across devices in real time, connect
+**your own** Firebase project — no credentials are baked into the code, and your Firebase
+config never leaves your device (it's kept in `localStorage`, not in Firestore). The whole
+ledger is stored as one document at `masterr/{your-uid}` and kept in sync live; last write
+wins at the document level, which is the right trade-off for a single-user tracker.
+
+**Setup (one time):**
+
+1. In the [Firebase console](https://console.firebase.google.com) create a project and a
+   **Web app**; copy its config object.
+2. **Build → Firestore Database → Create** (production mode).
+3. **Build → Authentication → Sign-in method** → enable **Google** and/or **Anonymous**.
+4. For Google sign-in, add the domain you open the app from under **Authentication →
+   Settings → Authorized domains** (e.g. your GitHub Pages domain, or `localhost`).
+5. Paste these Firestore **security rules** so only you can read your data:
+
+   ```
+   rules_version = '2';
+   service cloud.firestore {
+     match /databases/{database}/documents {
+       match /masterr/{uid} {
+         allow read, write: if request.auth != null && request.auth.uid == uid;
+       }
+     }
+   }
+   ```
+
+6. In the app: **Settings → Cloud sync → Firebase**, paste your config, **Connect project**,
+   then **Sign in with Google**. The footer dot turns green when synced.
+
+**Important:** Google sign-in requires an authorized domain, so it does **not** work from a
+raw `file://` path — host the page (GitHub Pages or `localhost`) or use Anonymous sign-in.
+The interactive preview inside Claude runs local-only because its sandbox blocks the Firebase
+SDK; the copy in this repo does the real cloud sync once hosted.
+
+### Host it free on GitHub Pages
+
+Repo **Settings → Pages → Build and deployment → Deploy from a branch**, pick this branch and
+the root folder. Your app is then at `https://<username>.github.io/<repo>/` — add that domain
+to Firebase Authorized domains and Google sign-in works.
 
 ## Tech
 
