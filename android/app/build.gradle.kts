@@ -84,6 +84,8 @@ dependencies {
     implementation("com.google.firebase:firebase-auth-ktx")
     implementation("com.google.firebase:firebase-firestore-ktx")
     implementation("com.google.android.gms:play-services-auth:21.2.0")
+    // Chrome Custom Tabs for the browser-based Firebase sign-in
+    implementation("androidx.browser:browser:1.8.0")
 
     // Gemini call
     implementation("com.squareup.okhttp3:okhttp:4.12.0")

@@ -21,11 +21,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalContext
-import com.google.android.gms.auth.api.signin.GoogleSignIn
-import com.google.android.gms.auth.api.signin.GoogleSignInOptions
-import com.google.firebase.auth.GoogleAuthProvider
+import android.app.Activity
+import com.google.firebase.auth.OAuthProvider
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -63,34 +61,25 @@ fun AppRoot(initialText: String?) {
         }
     }
 
-    val signInLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
-        try {
-            val account = GoogleSignIn.getSignedInAccountFromIntent(res.data)
-                .getResult(com.google.android.gms.common.api.ApiException::class.java)
-            val idToken = account?.idToken
-            if (idToken.isNullOrBlank()) { toast(ctx, "No token returned — the SHA-1 or Web client ID doesn't match."); return@rememberLauncherForActivityResult }
-            val cred = GoogleAuthProvider.getCredential(idToken, null)
-            scope.launch {
-                try { Repo.auth(ctx, cfg).signInWithCredential(cred).await(); authTick++; Scheduler.runNow(ctx) }
-                catch (e: Exception) { toast(ctx, "Firebase sign-in failed: ${e.message}") }
-            }
-        } catch (e: com.google.android.gms.common.api.ApiException) {
-            val hint = when (e.statusCode) {
-                10 -> "code 10 (DEVELOPER_ERROR): register the SHA-1 in Firebase and paste the WEB client ID, then wait a few minutes"
-                12501 -> "you closed the sign-in screen"
-                12500 -> "code 12500: sign-in failed — check the Web client ID"
-                7 -> "network error — check your connection"
-                else -> "code ${e.statusCode}"
-            }
-            toast(ctx, "Google sign-in failed: $hint")
-        } catch (e: Exception) { toast(ctx, "Google sign-in error: ${e.message}") }
+    // If the activity was recreated while the browser sign-in was in flight, finish it.
+    LaunchedEffect(cfg.firebaseReady) {
+        if (cfg.firebaseReady) {
+            val pending = try { Repo.auth(ctx, cfg).pendingAuthResult } catch (e: Exception) { null }
+            pending?.addOnSuccessListener { authTick++; Scheduler.runNow(ctx) }
+                ?.addOnFailureListener { }
+        }
     }
 
+    // Browser-based Google sign-in via Firebase (no SHA-1 / no Android OAuth client needed).
     fun startSignIn() {
+        val activity = ctx as? Activity ?: run { toast(ctx, "Can't start sign-in here"); return }
         try {
-            val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
-                .requestIdToken(cfg.webClientId).requestEmail().build()
-            signInLauncher.launch(GoogleSignIn.getClient(ctx, gso).signInIntent)
+            val provider = OAuthProvider.newBuilder("google.com").apply {
+                addCustomParameter("prompt", "select_account")
+            }.build()
+            Repo.auth(ctx, cfg).startActivityForSignInWithProvider(activity, provider)
+                .addOnSuccessListener { authTick++; Scheduler.runNow(ctx) }
+                .addOnFailureListener { e -> toast(ctx, "Sign-in failed: ${e.message}") }
         } catch (e: Exception) { toast(ctx, "Could not start sign-in: ${e.message}") }
     }
 
@@ -111,10 +100,6 @@ fun AppRoot(initialText: String?) {
             onSignOut = {
                 scope.launch {
                     try { Repo.auth(ctx, cfg).signOut() } catch (e: Exception) {}
-                    try {
-                        val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN).build()
-                        GoogleSignIn.getClient(ctx, gso).signOut()
-                    } catch (e: Exception) {}
                     authTick++; screen = "chat"
                 }
             }
@@ -132,7 +117,7 @@ private fun SignInScreen(onSignIn: () -> Unit, onReconfigure: () -> Unit) {
     ) {
         Text("Masterr", fontSize = 34.sp, fontWeight = FontWeight.ExtraBold, color = Color(0xFF7B5CFF))
         Spacer(Modifier.height(8.dp))
-        Text("Sign in with the same Google account you use on the web dashboard, so your tasks sync.",
+        Text("Opens your browser to sign in with the same Google account you use on the web dashboard, so your tasks sync.",
             textAlign = TextAlign.Center, color = Color(0xFF5C5478))
         Spacer(Modifier.height(24.dp))
         Button(onClick = onSignIn, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF7B5CFF))) {
