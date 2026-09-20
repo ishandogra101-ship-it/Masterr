@@ -24,8 +24,10 @@ object Repo {
     private const val APP = "masterr"
 
     private fun app(ctx: Context, cfg: Config): FirebaseApp {
+        // Use the DEFAULT FirebaseApp: Firebase Auth's browser sign-in flow (and its
+        // internal activities) resolve FirebaseApp.getInstance() with no name.
         return try {
-            FirebaseApp.getInstance(APP)
+            FirebaseApp.getInstance()
         } catch (e: IllegalStateException) {
             val opts = FirebaseOptions.Builder()
                 .setApiKey(cfg.apiKey)
@@ -33,7 +35,7 @@ object Repo {
                 .setProjectId(cfg.projectId)
                 .apply { if (cfg.senderId.isNotBlank()) setGcmSenderId(cfg.senderId) }
                 .build()
-            FirebaseApp.initializeApp(ctx, opts, APP)
+            FirebaseApp.initializeApp(ctx, opts)
         }
     }
 
