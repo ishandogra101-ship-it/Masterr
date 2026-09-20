@@ -2,6 +2,7 @@ package com.masterr.app
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -67,12 +68,28 @@ Rules:
 
     private val BASES = listOf("v1beta", "v1")
 
+    private val TRANSIENT = setOf(429, 500, 502, 503, 504)
+
     /** Returns (responseBody, httpCode). */
     private fun post(base: String, model: String, key: String, bodyJson: String): Pair<String, Int> {
         val url = "https://generativelanguage.googleapis.com/$base/models/$model:generateContent?key=$key"
         val req = Request.Builder().url(url).post(bodyJson.toRequestBody("application/json".toMediaType())).build()
-        client.newCall(req).execute().use { resp ->
-            return Pair(resp.body?.string() ?: "", resp.code)
+        return try {
+            client.newCall(req).execute().use { resp -> Pair(resp.body?.string() ?: "", resp.code) }
+        } catch (e: Exception) { Pair("", -1) }
+    }
+
+    /** Retry transient overloads (429/5xx) with backoff before giving up. */
+    private suspend fun postResilient(base: String, model: String, key: String, bodyJson: String): Pair<String, Int> {
+        var attempt = 0
+        while (true) {
+            val res = post(base, model, key, bodyJson)
+            if ((res.second in TRANSIENT || res.second == -1) && attempt < 3) {
+                attempt++
+                delay(600L * attempt * attempt)   // 0.6s, 2.4s, 5.4s
+                continue
+            }
+            return res
         }
     }
 
@@ -140,8 +157,8 @@ Rules:
                 var lastBody = ""
                 for (base in BASES) {
                     val tried = HashSet<String>()
-                    var model = cfg.geminiModel.ifBlank { "gemini-2.0-flash" }
-                    var (txt, code) = post(base, model, cfg.geminiKey, bodyJson)
+                    var model = cfg.geminiModel.ifBlank { "gemini-3.6-flash" }
+                    var (txt, code) = postResilient(base, model, cfg.geminiKey, bodyJson)
                     tried.add(model)
                     var guard = 0
                     while (code == 404 && guard++ < 5) {
@@ -150,7 +167,7 @@ Rules:
                             ?: pick(listModels(base, cfg.geminiKey).filter { it !in tried })
                         if (alt.isNullOrBlank()) break
                         model = alt; tried.add(model)
-                        val r = post(base, model, cfg.geminiKey, bodyJson)
+                        val r = postResilient(base, model, cfg.geminiKey, bodyJson)
                         txt = r.first; code = r.second
                     }
                     if (code == 200) {
@@ -164,7 +181,14 @@ Rules:
                     lastCode = code; lastBody = txt
                     if (code == 400 || code == 403) break   // auth/key problems won't change across versions
                 }
-                AiResult("Assistant error ($lastCode): ${errorSnippet(lastBody)}", "smalltalk", false, null)
+                if (lastCode in TRANSIENT || lastCode == -1) {
+                    AiResult(
+                        "Gemini's servers are busy right now (it tried a few times). Give it a few seconds and send that again.",
+                        "smalltalk", false, null
+                    )
+                } else {
+                    AiResult("Assistant error ($lastCode): ${errorSnippet(lastBody)}", "smalltalk", false, null)
+                }
             } catch (e: Exception) {
                 AiResult("Couldn't reach the assistant. You can still add tasks on the web dashboard.", "smalltalk", false, null)
             }
