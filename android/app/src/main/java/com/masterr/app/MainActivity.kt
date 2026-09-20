@@ -65,15 +65,25 @@ fun AppRoot(initialText: String?) {
 
     val signInLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
         try {
-            val account = GoogleSignIn.getSignedInAccountFromIntent(res.data).getResult(Exception::class.java)
+            val account = GoogleSignIn.getSignedInAccountFromIntent(res.data)
+                .getResult(com.google.android.gms.common.api.ApiException::class.java)
             val idToken = account?.idToken
-            if (idToken.isNullOrBlank()) { toast(ctx, "No token — check Web client ID & SHA-1"); return@rememberLauncherForActivityResult }
+            if (idToken.isNullOrBlank()) { toast(ctx, "No token returned — the SHA-1 or Web client ID doesn't match."); return@rememberLauncherForActivityResult }
             val cred = GoogleAuthProvider.getCredential(idToken, null)
             scope.launch {
                 try { Repo.auth(ctx, cfg).signInWithCredential(cred).await(); authTick++; Scheduler.runNow(ctx) }
-                catch (e: Exception) { toast(ctx, "Sign-in failed: ${e.message}") }
+                catch (e: Exception) { toast(ctx, "Firebase sign-in failed: ${e.message}") }
             }
-        } catch (e: Exception) { toast(ctx, "Google sign-in cancelled/failed") }
+        } catch (e: com.google.android.gms.common.api.ApiException) {
+            val hint = when (e.statusCode) {
+                10 -> "code 10 (DEVELOPER_ERROR): register the SHA-1 in Firebase and paste the WEB client ID, then wait a few minutes"
+                12501 -> "you closed the sign-in screen"
+                12500 -> "code 12500: sign-in failed — check the Web client ID"
+                7 -> "network error — check your connection"
+                else -> "code ${e.statusCode}"
+            }
+            toast(ctx, "Google sign-in failed: $hint")
+        } catch (e: Exception) { toast(ctx, "Google sign-in error: ${e.message}") }
     }
 
     fun startSignIn() {
