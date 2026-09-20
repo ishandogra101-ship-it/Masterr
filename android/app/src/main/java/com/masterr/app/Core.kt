@@ -17,7 +17,7 @@ data class Config(
     val senderId: String = "",
     val webClientId: String = "",
     val geminiKey: String = "",
-    val geminiModel: String = "gemini-2.0-flash",
+    val geminiModel: String = "gemini-3.6-flash",
     val dashboardUrl: String = "https://ishandogra101-ship-it.github.io/Masterr/"
 ) {
     val firebaseReady get() = apiKey.isNotBlank() && appId.isNotBlank() && projectId.isNotBlank()

@@ -63,7 +63,7 @@ object Prefs {
             senderId = p[K.senderId] ?: "",
             webClientId = p[K.webClientId] ?: "",
             geminiKey = p[K.geminiKey] ?: "",
-            geminiModel = p[K.geminiModel] ?: "gemini-2.0-flash",
+            geminiModel = p[K.geminiModel] ?: "gemini-3.6-flash",
             dashboardUrl = p[K.dashboardUrl] ?: "https://ishandogra101-ship-it.github.io/Masterr/"
         )
     }

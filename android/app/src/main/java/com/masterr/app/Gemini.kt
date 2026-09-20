@@ -29,11 +29,6 @@ object Gemini {
         .readTimeout(45, TimeUnit.SECONDS)
         .build()
 
-    private val PREFERRED = listOf(
-        "gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-001",
-        "gemini-1.5-flash", "gemini-1.5-flash-latest", "gemini-flash-latest"
-    )
-
     private fun systemPrompt(categories: List<String>): String {
         val now = LocalDateTime.now(ZoneId.systemDefault())
         val today = now.format(DateTimeFormatter.ofPattern("EEEE, yyyy-MM-dd HH:mm", Locale.getDefault()))
@@ -103,11 +98,22 @@ Rules:
         } catch (e: Exception) { emptyList() }
     }
 
-    private fun pick(usable: List<String>): String? =
-        PREFERRED.firstOrNull { usable.contains(it) }
-            ?: usable.firstOrNull { it.contains("flash") && !it.contains("thinking") }
-            ?: usable.firstOrNull { it.startsWith("gemini") }
+    private fun modelVersion(name: String): Double =
+        Regex("gemini-([0-9]+(?:\\.[0-9]+)?)").find(name)?.groupValues?.getOrNull(1)?.toDoubleOrNull() ?: -1.0
+
+    /** Prefer the highest-version flash model actually offered to this key. */
+    private fun pick(usable: List<String>): String? {
+        if (usable.isEmpty()) return null
+        val flash = usable.filter { it.contains("flash") && !it.contains("thinking") }
+        return flash.maxByOrNull { modelVersion(it) }
+            ?: usable.filter { it.startsWith("gemini") }.maxByOrNull { modelVersion(it) }
             ?: usable.firstOrNull()
+    }
+
+    /** Google returns "…use models/<X> for the latest…" when a model is retired — follow it. */
+    private fun recommendedModel(body: String): String? =
+        Regex("use\\s+models/\\s*([A-Za-z0-9._-]+)", RegexOption.IGNORE_CASE)
+            .find(body)?.groupValues?.getOrNull(1)?.trim()?.takeIf { it.isNotBlank() }
 
     private fun errorSnippet(body: String): String {
         return try { JSONObject(body).optJSONObject("error")?.optString("message")?.take(180) ?: body.take(160) }
@@ -133,17 +139,22 @@ Rules:
                 var lastCode = 0
                 var lastBody = ""
                 for (base in BASES) {
+                    val tried = HashSet<String>()
                     var model = cfg.geminiModel.ifBlank { "gemini-2.0-flash" }
                     var (txt, code) = post(base, model, cfg.geminiKey, bodyJson)
-                    if (code == 404) {
-                        val alt = pick(listModels(base, cfg.geminiKey))
-                        if (!alt.isNullOrBlank() && alt != model) {
-                            val retry = post(base, alt, cfg.geminiKey, bodyJson)
-                            if (retry.second == 200) { try { Prefs.saveConfig(ctx, cfg.copy(geminiModel = alt)) } catch (e: Exception) {} }
-                            txt = retry.first; code = retry.second; model = alt
-                        }
+                    tried.add(model)
+                    var guard = 0
+                    while (code == 404 && guard++ < 5) {
+                        // 1) follow Google's explicit replacement, then 2) the best model this key offers
+                        val alt = (recommendedModel(txt)?.takeIf { it !in tried })
+                            ?: pick(listModels(base, cfg.geminiKey).filter { it !in tried })
+                        if (alt.isNullOrBlank()) break
+                        model = alt; tried.add(model)
+                        val r = post(base, model, cfg.geminiKey, bodyJson)
+                        txt = r.first; code = r.second
                     }
                     if (code == 200) {
+                        try { Prefs.saveConfig(ctx, cfg.copy(geminiModel = model)) } catch (e: Exception) {}
                         val root = JSONObject(txt)
                         val cand = root.optJSONArray("candidates")?.optJSONObject(0)
                         val part = cand?.optJSONObject("content")?.optJSONArray("parts")?.optJSONObject(0)
