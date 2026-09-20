@@ -9,6 +9,15 @@ No build step, no account, no server. Open `index.html` in any browser. Your dat
 saved to that browser (`localStorage`) and never leaves your device. Export a JSON
 backup anytime and import it on another machine.
 
+## 📱 Android assistant (`android/`)
+
+A native Android app turns Masterr into a **proactive assistant**: conversational task
+capture, deadline reminders with Done/Snooze buttons, morning/midday/evening check-ins that
+discover work you forgot to enter, a home-screen widget, and "what should I work on?" — all
+syncing to the **same Firestore data** as this web app. It works even when the app is closed.
+Get the auto-built APK from the repo's **Actions** tab and follow **[android/README.md](android/README.md)**
+for the 10-minute setup.
+
 ## Views
 
 - **Overview** — the day at a glance: overdue / due-in-7-days / active / completed

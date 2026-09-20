@@ -540,6 +540,8 @@ function parse(iso){ if(!iso)return null; const p=String(iso).split('-').map(Num
 function toISO(d){ if(!d)return ""; return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}
 function daysUntil(iso){ const p=parse(iso); if(!p)return null; return Math.round((p-today())/MS);}
 function fmtShort(iso){ const p=parse(iso); return p?p.toLocaleDateString(undefined,{month:'short',day:'numeric'}):"";}
+function fmt12(hm){ if(!hm)return""; const [h,m]=hm.split(":").map(Number); const ap=h<12?"AM":"PM"; const h12=(h%12)||12; return h12+":"+String(m).padStart(2,"0")+" "+ap;}
+function fmtDur(min){ min=+min||0; const h=Math.floor(min/60), m=min%60; return h?(m?h+"h "+m+"m":h+"h"):m+"m";}
 function relLabel(iso){ const d=daysUntil(iso); if(d==null)return "—";
   if(d<0)return Math.abs(d)+"d ago"; if(d===0)return "Today"; if(d===1)return "Tomorrow";
   const p=parse(iso); if(d<7)return p.toLocaleDateString(undefined,{weekday:'short'}); return fmtShort(iso);}
@@ -880,8 +882,9 @@ function focusCard(it){
   const d=nextDue(it); const od=d&&daysUntil(d)<0&&!done;
   const meta=el("div",{class:"fmeta"});
   if(done) meta.append(el("span",{class:"pill done"}, icon("check",2.4), "Done"));
-  else if(d) meta.append(el("span",{class:"pill "+(od?"over":"due")}, icon("clock",2), relLabel(d)));
+  else if(d) meta.append(el("span",{class:"pill "+(od?"over":"due")}, icon("clock",2), relLabel(d)+(d===it.due&&it.dueTime?" "+fmt12(it.dueTime):"")));
   if(!done && it.priority && it.priority!=="Medium") meta.append(el("span",{class:"prio p-"+it.priority}, it.priority));
+  if(it.estimateMin) meta.append(el("span",{class:"prio",style:"color:var(--ink-dim)"}, "~"+fmtDur(it.estimateMin)));
   meta.append(el("span",{class:"fcat"}, c.name));
   card.append(meta);
   const bar=progressCtl(it,p=>{ pctLbl.textContent=p+"%"; });
@@ -1237,7 +1240,7 @@ function openEditor(id){
   const editing = id? state.items.find(i=>i.id===id) : null;
   const it = editing ? JSON.parse(JSON.stringify(editing)) : {
     id:uid(), title:"", categoryId:state.categories[0]&&state.categories[0].id, statusId:state.statuses[0].id,
-    priority:"Medium", due:"", notes:"", tags:[], people:[], subtasks:[], fields:[],
+    priority:"Medium", due:"", dueTime:"", estimateMin:null, notes:"", tags:[], people:[], subtasks:[], fields:[],
     createdAt:Date.now(), updatedAt:Date.now(), archived:false };
   if(!editing){ it.subtasks=tmplMilestones(it.categoryId); it._auto=it.subtasks.length>0; }
 
@@ -1249,6 +1252,8 @@ function openEditor(id){
   const stSel=el("select",{}, ...state.statuses.map(s=>el("option",{value:s.id,selected:s.id===it.statusId?"selected":null},s.name)));
   const prSel=el("select",{}, ...PRIOS.map(p=>el("option",{value:p,selected:p===it.priority?"selected":null},p)));
   const dueInput=el("input",{type:"date",value:it.due||""});
+  const timeInput=el("input",{type:"time",value:it.dueTime||""});
+  const estInput=el("input",{type:"number",min:"0",step:"15",placeholder:"e.g. 120",value:(it.estimateMin!=null?it.estimateMin:"")});
   const notesInput=el("textarea",{placeholder:"Notes, links, context…"}); notesInput.value=it.notes||"";
   const tagsInput=el("input",{type:"text",placeholder:"comma, separated, tags",value:(it.tags||[]).join(", ")});
 
@@ -1313,9 +1318,11 @@ function openEditor(id){
       el("div",{}, el("label",{class:"fl"},"Status"), stSel),
       el("div",{}, el("label",{class:"fl"},"Priority"), prSel)),
     el("div",{class:"field",style:"margin-top:14px"},
-      el("div",{class:"row2"},
+      el("div",{class:"row3"},
         el("div",{}, el("label",{class:"fl"},"Due date"), dueInput),
-        el("div",{}, el("label",{class:"fl"},"Tags"), tagsInput))),
+        el("div",{}, el("label",{class:"fl"},"Due time"), timeInput),
+        el("div",{}, el("label",{class:"fl"},"Est. effort (min)"), estInput))),
+    el("div",{class:"field"}, el("label",{class:"fl"},"Tags"), tagsInput),
     el("div",{class:"field"}, el("label",{class:"fl"},"Progress"),
       el("div",{style:"display:flex;align-items:center;gap:12px"}, ebar, epct, eauto)),
     el("div",{class:"field"}, el("label",{class:"fl"},"Notes"), notesInput),
@@ -1333,7 +1340,9 @@ function openEditor(id){
   const saveIt=()=>{
     it.title=titleInput.value.trim()||"Untitled";
     it.categoryId=catSel.value; it.statusId=stSel.value; it.priority=prSel.value;
-    it.due=dueInput.value; it.notes=notesInput.value;
+    it.due=dueInput.value; it.dueTime=timeInput.value||"";
+    it.estimateMin=estInput.value!==""?Math.max(0,parseInt(estInput.value,10)||0):null;
+    it.notes=notesInput.value;
     it.tags=tagsInput.value.split(",").map(s=>s.trim()).filter(Boolean);
     it.subtasks=(it.subtasks||[]).filter(s=>s.title.trim());
     it.people=(it.people||[]).filter(p=>p.name.trim());

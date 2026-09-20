@@ -1,0 +1,8 @@
+<resources>
+    <style name="Theme.Masterr" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@color/masterr_bg</item>
+        <item name="android:statusBarColor">@color/masterr_bg</item>
+        <item name="android:navigationBarColor">@color/masterr_bg</item>
+        <item name="android:windowLightStatusBar">true</item>
+    </style>
+</resources>

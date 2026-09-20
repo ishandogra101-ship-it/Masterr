@@ -1,0 +1,5 @@
+<resources>
+    <string name="app_name">Masterr</string>
+    <string name="quick_capture">Masterr Task</string>
+    <string name="widget_desc">Masterr — next tasks</string>
+</resources>
