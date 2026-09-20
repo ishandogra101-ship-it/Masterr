@@ -70,23 +70,24 @@ Rules:
 """.trim()
     }
 
+    private val BASES = listOf("v1beta", "v1")
+
     /** Returns (responseBody, httpCode). */
-    private fun post(model: String, key: String, bodyJson: String): Pair<String, Int> {
-        val url = "https://generativelanguage.googleapis.com/v1beta/models/$model:generateContent?key=$key"
+    private fun post(base: String, model: String, key: String, bodyJson: String): Pair<String, Int> {
+        val url = "https://generativelanguage.googleapis.com/$base/models/$model:generateContent?key=$key"
         val req = Request.Builder().url(url).post(bodyJson.toRequestBody("application/json".toMediaType())).build()
         client.newCall(req).execute().use { resp ->
             return Pair(resp.body?.string() ?: "", resp.code)
         }
     }
 
-    /** Ask the API which models this key can actually use for generateContent, pick the best flash. */
-    private fun listModels(key: String): String? {
+    /** Ask the API which models this key can actually use for generateContent. */
+    private fun listModels(base: String, key: String): List<String> {
         return try {
-            val url = "https://generativelanguage.googleapis.com/v1beta/models?key=$key&pageSize=200"
+            val url = "https://generativelanguage.googleapis.com/$base/models?key=$key&pageSize=200"
             client.newCall(Request.Builder().url(url).get().build()).execute().use { resp ->
-                if (!resp.isSuccessful) return null
-                val root = JSONObject(resp.body?.string() ?: "")
-                val arr = root.optJSONArray("models") ?: return null
+                if (!resp.isSuccessful) return emptyList()
+                val arr = JSONObject(resp.body?.string() ?: "").optJSONArray("models") ?: return emptyList()
                 val usable = ArrayList<String>()
                 for (i in 0 until arr.length()) {
                     val m = arr.optJSONObject(i) ?: continue
@@ -97,12 +98,20 @@ Rules:
                     val name = m.optString("name").removePrefix("models/")
                     if (name.isNotBlank()) usable.add(name)
                 }
-                PREFERRED.firstOrNull { usable.contains(it) }
-                    ?: usable.firstOrNull { it.contains("flash") && !it.contains("thinking") }
-                    ?: usable.firstOrNull { it.startsWith("gemini") }
-                    ?: usable.firstOrNull()
+                usable
             }
-        } catch (e: Exception) { null }
+        } catch (e: Exception) { emptyList() }
+    }
+
+    private fun pick(usable: List<String>): String? =
+        PREFERRED.firstOrNull { usable.contains(it) }
+            ?: usable.firstOrNull { it.contains("flash") && !it.contains("thinking") }
+            ?: usable.firstOrNull { it.startsWith("gemini") }
+            ?: usable.firstOrNull()
+
+    private fun errorSnippet(body: String): String {
+        return try { JSONObject(body).optJSONObject("error")?.optString("message")?.take(180) ?: body.take(160) }
+        catch (e: Exception) { body.take(160) }
     }
 
     suspend fun chat(ctx: Context, cfg: Config, categories: List<String>, history: List<Pair<String, String>>): AiResult =
@@ -121,37 +130,30 @@ Rules:
                     .put("generationConfig", JSONObject().put("temperature", 0.2).put("responseMimeType", "application/json"))
                     .toString()
 
-                var model = cfg.geminiModel.ifBlank { "gemini-2.0-flash" }
-                var (txt, code) = post(model, cfg.geminiKey, bodyJson)
-
-                if (code == 404) {
-                    // Model not available for this key — discover a working one and remember it.
-                    val alt = listModels(cfg.geminiKey)
-                    if (!alt.isNullOrBlank() && alt != model) {
-                        try { Prefs.saveConfig(ctx, cfg.copy(geminiModel = alt)) } catch (e: Exception) {}
-                        val retry = post(alt, cfg.geminiKey, bodyJson)
-                        txt = retry.first; code = retry.second; model = alt
+                var lastCode = 0
+                var lastBody = ""
+                for (base in BASES) {
+                    var model = cfg.geminiModel.ifBlank { "gemini-2.0-flash" }
+                    var (txt, code) = post(base, model, cfg.geminiKey, bodyJson)
+                    if (code == 404) {
+                        val alt = pick(listModels(base, cfg.geminiKey))
+                        if (!alt.isNullOrBlank() && alt != model) {
+                            val retry = post(base, alt, cfg.geminiKey, bodyJson)
+                            if (retry.second == 200) { try { Prefs.saveConfig(ctx, cfg.copy(geminiModel = alt)) } catch (e: Exception) {} }
+                            txt = retry.first; code = retry.second; model = alt
+                        }
                     }
-                }
-
-                if (code != 200) {
-                    val extra = when (code) {
-                        404 -> " — no usable Gemini model for this key"
-                        400 -> " — bad request (check the key)"
-                        403 -> " — key not authorized / API not enabled"
-                        429 -> " — rate limited, try again shortly"
-                        else -> ""
+                    if (code == 200) {
+                        val root = JSONObject(txt)
+                        val cand = root.optJSONArray("candidates")?.optJSONObject(0)
+                        val part = cand?.optJSONObject("content")?.optJSONArray("parts")?.optJSONObject(0)
+                        val out = part?.optString("text") ?: return@withContext AiResult("I didn't catch that — try again?", "smalltalk", false, null)
+                        return@withContext parse(out)
                     }
-                    return@withContext AiResult("Assistant error ($code)$extra.", "smalltalk", false, null)
+                    lastCode = code; lastBody = txt
+                    if (code == 400 || code == 403) break   // auth/key problems won't change across versions
                 }
-
-                val root = JSONObject(txt)
-                val cand = root.optJSONArray("candidates")?.optJSONObject(0)
-                val part = cand?.optJSONObject("content")?.optJSONArray("parts")?.optJSONObject(0)
-                val out = part?.optString("text") ?: return@withContext AiResult(
-                    "I didn't catch that — try again?", "smalltalk", false, null
-                )
-                parse(out)
+                AiResult("Assistant error ($lastCode): ${errorSnippet(lastBody)}", "smalltalk", false, null)
             } catch (e: Exception) {
                 AiResult("Couldn't reach the assistant. You can still add tasks on the web dashboard.", "smalltalk", false, null)
             }
