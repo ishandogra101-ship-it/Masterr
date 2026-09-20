@@ -88,7 +88,7 @@ fun ChatScreen(
                 } else {
                     val history = msgs.takeLast(16).dropWhile { !it.fromUser }
                         .map { (if (it.fromUser) "user" else "model") to it.text }
-                    val r = Gemini.chat(cfg, cats, history)
+                    val r = Gemini.chat(ctx, cfg, cats, history)
                     when (r.intent) {
                         "recommend" -> { val t = withContext(Dispatchers.IO) { Repo.tasks(ctx, cfg) }; msgs.add(ChatMsg(false, Assistant.recommend(t))) }
                         "plan" -> { val t = withContext(Dispatchers.IO) { Repo.tasks(ctx, cfg) }; msgs.add(ChatMsg(false, Assistant.planDay(t))) }
@@ -203,6 +203,7 @@ fun SetupScreen(current: Config, onSave: (Config) -> Unit) {
     var senderId by remember { mutableStateOf(current.senderId) }
     var webClientId by remember { mutableStateOf(current.webClientId) }
     var geminiKey by remember { mutableStateOf(current.geminiKey) }
+    var geminiModel by remember { mutableStateOf(current.geminiModel) }
     var pasteJson by remember { mutableStateOf("") }
 
     Column(
@@ -231,10 +232,12 @@ fun SetupScreen(current: Config, onSave: (Config) -> Unit) {
         Field("Messaging sender ID", senderId) { senderId = it }
         Field("Web client ID (for Google sign-in)", webClientId) { webClientId = it }
         Field("Gemini API key", geminiKey) { geminiKey = it }
+        Field("Gemini model (auto-detects if wrong)", geminiModel) { geminiModel = it }
 
         Button(
             onClick = { onSave(current.copy(apiKey = apiKey.trim(), appId = appId.trim(), projectId = projectId.trim(),
-                senderId = senderId.trim(), webClientId = webClientId.trim(), geminiKey = geminiKey.trim())) },
+                senderId = senderId.trim(), webClientId = webClientId.trim(), geminiKey = geminiKey.trim(),
+                geminiModel = geminiModel.trim().ifBlank { "gemini-2.0-flash" })) },
             enabled = apiKey.isNotBlank() && appId.isNotBlank() && projectId.isNotBlank() && webClientId.isNotBlank(),
             modifier = Modifier.fillMaxWidth(),
             colors = ButtonDefaults.buttonColors(containerColor = Violet)
