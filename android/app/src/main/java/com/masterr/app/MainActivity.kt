@@ -54,7 +54,7 @@ fun AppRoot(initialText: String?) {
     val signedIn = remember(cfg, authTick) { if (cfg.firebaseReady) Repo.signedIn(ctx, cfg) else false }
 
     // Ask for notification permission once we're in.
-    val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {}
+    val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { _ -> }
     LaunchedEffect(signedIn) {
         if (signedIn) {
             Scheduler.schedule(ctx)
