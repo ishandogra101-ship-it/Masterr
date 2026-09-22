@@ -1,9 +1,12 @@
 package com.masterr.app
 
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.PowerManager
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -13,6 +16,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -53,11 +57,13 @@ fun AppRoot(initialText: String?) {
 
     // Ask for notification permission once we're in.
     val notifPerm = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { _ -> }
+    var askedBattery by rememberSaveable { mutableStateOf(false) }
     LaunchedEffect(signedIn) {
         if (signedIn) {
             Scheduler.schedule(ctx)
             Prefs.markInteract(ctx)
             if (Build.VERSION.SDK_INT >= 33) notifPerm.launch(android.Manifest.permission.POST_NOTIFICATIONS)
+            if (!askedBattery) { askedBattery = true; requestBatteryExemption(ctx) }
         }
     }
 
@@ -130,3 +136,23 @@ private fun SignInScreen(onSignIn: () -> Unit, onReconfigure: () -> Unit) {
 
 private fun toast(ctx: android.content.Context, msg: String) =
     Toast.makeText(ctx, msg, Toast.LENGTH_LONG).show()
+
+/**
+ * Ask Android to exempt Masterr from battery optimization. Without this, many phones
+ * (especially Xiaomi/Realme/Oppo/Vivo/Samsung/OnePlus) force-stop the app in the
+ * background, which cancels its alarms and stops all reminders until you reopen it.
+ * The system shows a one-tap "Allow" dialog; if it's already exempt we do nothing.
+ */
+private fun requestBatteryExemption(ctx: Context) {
+    if (Build.VERSION.SDK_INT < 23) return
+    try {
+        val pm = ctx.getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (pm.isIgnoringBatteryOptimizations(ctx.packageName)) return
+        val i = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+            .setData(Uri.parse("package:" + ctx.packageName))
+        ctx.startActivity(i)
+    } catch (e: Exception) {
+        try { ctx.startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)) }
+        catch (_: Exception) { }
+    }
+}

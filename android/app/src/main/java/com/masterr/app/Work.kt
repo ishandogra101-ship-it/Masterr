@@ -1,9 +1,14 @@
 package com.masterr.app
 
+import android.app.AlarmManager
+import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import androidx.work.*
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import java.time.LocalTime
 import java.util.concurrent.TimeUnit
 
@@ -15,11 +20,15 @@ object Scheduler {
     private const val UNIQUE = "masterr-loop"
 
     fun schedule(ctx: Context) {
+        // WorkManager periodic run is a *backstop*. It is deferrable, so on its own it
+        // won't fire reliably in Doze / under OEM battery killers — the AlarmManager
+        // heartbeat below is what actually keeps reminders arriving while the app is closed.
         val periodic = PeriodicWorkRequestBuilder<MasterrWorker>(30, TimeUnit.MINUTES)
             .setConstraints(Constraints.Builder().setRequiredNetworkType(NetworkType.CONNECTED).build())
             .setBackoffCriteria(BackoffPolicy.LINEAR, 15, TimeUnit.MINUTES)
             .build()
         WorkManager.getInstance(ctx).enqueueUniquePeriodicWork(UNIQUE, ExistingPeriodicWorkPolicy.UPDATE, periodic)
+        Alarms.schedule(ctx)
         runNow(ctx)
     }
 
@@ -31,21 +40,78 @@ object Scheduler {
     }
 }
 
+/**
+ * AlarmManager heartbeat. Unlike a periodic WorkManager job, an alarm scheduled with
+ * setAndAllowWhileIdle() still fires while the device is in Doze, so deadline reminders
+ * and check-ins land on time instead of piling up until the app is next opened.
+ * It needs no special permission and re-arms itself after every fire.
+ */
+object Alarms {
+    private const val REQ = 7001
+    const val ACTION = "com.masterr.app.HEARTBEAT"
+    private const val INTERVAL = 15 * 60_000L   // 15 minutes
+
+    private fun pi(ctx: Context): PendingIntent {
+        val i = Intent(ctx, AlarmReceiver::class.java).setAction(ACTION)
+        val flags = PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        return PendingIntent.getBroadcast(ctx, REQ, i, flags)
+    }
+
+    fun schedule(ctx: Context) {
+        val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        val at = System.currentTimeMillis() + INTERVAL
+        try {
+            am.setAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, at, pi(ctx))
+        } catch (e: Exception) {
+            try { am.set(AlarmManager.RTC_WAKEUP, at, pi(ctx)) } catch (_: Exception) {}
+        }
+    }
+
+    fun cancel(ctx: Context) {
+        val am = ctx.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+        try { am.cancel(pi(ctx)) } catch (_: Exception) {}
+    }
+}
+
+class AlarmReceiver : BroadcastReceiver() {
+    override fun onReceive(ctx: Context, intent: Intent) {
+        val pending = goAsync()
+        val appCtx = ctx.applicationContext
+        CoroutineScope(Dispatchers.IO).launch {
+            try { Engine.run(appCtx) } catch (e: Exception) { }
+            finally {
+                Alarms.schedule(appCtx)   // chain the next heartbeat
+                pending.finish()
+            }
+        }
+    }
+}
+
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(ctx: Context, intent: Intent) {
-        if (intent.action == Intent.ACTION_BOOT_COMPLETED) Scheduler.schedule(ctx)
+        // Exact/allow-while-idle alarms are cleared on reboot; re-arm everything.
+        if (intent.action == Intent.ACTION_BOOT_COMPLETED ||
+            intent.action == Intent.ACTION_MY_PACKAGE_REPLACED) Scheduler.schedule(ctx)
     }
 }
 
 class MasterrWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ctx, params) {
+    override suspend fun doWork(): Result =
+        if (Engine.run(applicationContext)) Result.success() else Result.retry()
+}
 
-    override suspend fun doWork(): Result {
-        val ctx = applicationContext
+/**
+ * The single evaluation pass shared by the WorkManager backstop and the AlarmManager
+ * heartbeat: reads the current tasks and posts any reminders / check-ins that are due.
+ * Returns false only when the data fetch failed and the caller should retry.
+ */
+object Engine {
+    suspend fun run(ctx: Context): Boolean {
         val cfg = Prefs.readConfig(ctx)
-        if (!cfg.firebaseReady || !Repo.signedIn(ctx, cfg)) return Result.success()
+        if (!cfg.firebaseReady || !Repo.signedIn(ctx, cfg)) return true
         val s = Prefs.readSettings(ctx)
 
-        val tasks = try { Repo.tasks(ctx, cfg) } catch (e: Exception) { return Result.retry() }
+        val tasks = try { Repo.tasks(ctx, cfg) } catch (e: Exception) { return false }
         val now = System.currentTimeMillis()
 
         // Track the latest data change we've observed (for catch-up).
@@ -135,7 +201,7 @@ class MasterrWorker(ctx: Context, params: WorkerParameters) : CoroutineWorker(ct
         }
 
         Widget.refresh(ctx)
-        return Result.success()
+        return true
     }
 
     private fun maybeCheckin(ctx: Context, on: Boolean, time: String, tag: String, id: Int, today: String, title: String, text: String) {
